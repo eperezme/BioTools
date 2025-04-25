@@ -1,0 +1,13 @@
+SampleID,Factor,Replicate,bamReads,ControlID,bamControl,Peaks,PeakCaller,Tissue,Condition
+T2.7,T,1,P1_1.sorted.bam,,,MACS3/P1_1_peaks.narrowPeak,narrowPeak,NA,NA
+R1.2,R,1,P1_3.sorted.bam,,,MACS3/P1_3_peaks.narrowPeak,narrowPeak,NA,NA
+T6.7,T,1,P1_2.sorted.bam,,,MACS3/P1_2_peaks.narrowPeak,narrowPeak,NA,NA
+R6.7,R,1,P1_4.sorted.bam,,,MACS3/P1_4_peaks.narrowPeak,narrowPeak,NA,NA
+T1.7,T,1,P2_1.sorted.bam,,,MACS3/P2_1_peaks.narrowPeak,narrowPeak,NA,NA
+T2.6,T,1,P2_2.sorted.bam,,,MACS3/P2_2_peaks.narrowPeak,narrowPeak,NA,NA
+R1.7,R,1,P2_3.sorted.bam,,,MACS3/P2_3_peaks.narrowPeak,narrowPeak,NA,NA
+R2.6,R,1,P2_4.sorted.bam,,,MACS3/P2_4_peaks.narrowPeak,narrowPeak,NA,NA
+T7.6,T,1,P3_1.sorted.bam,,,MACS3/P3_1_peaks.narrowPeak,narrowPeak,NA,NA
+R1.6,R,1,P3_2.sorted.bam,,,MACS3/P3_2_peaks.narrowPeak,narrowPeak,NA,NA
+R8.7,R,1,P3_3.sorted.bam,,,MACS3/P3_3_peaks.narrowPeak,narrowPeak,NA,NA
+T1.6,T,1,P4_1.sorted.bam,,,MACS3/P4_1_peaks.narrowPeak,narrowPeak,NA,NA

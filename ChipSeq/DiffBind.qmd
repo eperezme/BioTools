@@ -1,0 +1,430 @@
+---
+title: "DiffBind"
+---
+# CHIPQC
+`ChIPQC` is a package that creates an html report of the sequencing `.bam` files. Currently it only supports the `rn4` genome assembly of *Rattus norvegicus*. I've tried to change the base assembly of `rn4` for the `rn6` from the `TxDb.Rnorvegicus.UCSC.rn6.refGene` package, but don't know if it actually works. So the QC results related to genomic features may not reflect the true nature of the data.
+
+The `html` for the QC report can be found inside the `ChIPQCreport` folder.
+```{r}
+#| eval: false
+
+## Load libraries
+library(ChIPQC)
+library(TxDb.Rnorvegicus.UCSC.rn6.refGene)
+TxDb.Rnorvegicus.UCSC.rn4.ensGene <- TxDb.Rnorvegicus.UCSC.rn6.refGene # This is bc there is no rn6 annotation in ChIPQC, so we overwrite the rn4 annotation with the rn6 genome annotation and then call rn4 in CHIPQC
+
+# Load samplesheet
+samples <- read.csv("samplesheet.csv")
+summary(samples)
+
+# Call the ChIPQC
+chipObj <- ChIPQC(samples, annotation = "rn4")
+# Save the report
+ChIPQCreport(
+  chipObj,
+  reportName = "ChIP QC report: P24016",
+  reportFolder = "ChIPQCreport",
+  facetBy = c("Factor"),
+  colourBy = c("Sample")
+)
+```
+
+
+# DiffBind
+
+## Load libraries
+
+```{r}
+#| warning: false
+#| error: false
+
+library(DiffBind)
+library(tidyverse)
+```
+
+
+## Reading in Peaksets
+The first step is to read in a set of peaksets and associated metadata. This is done using the sample sheet. Once the peaksets are read in, a merging function finds all overlapping peaks and derives a single set of unique genomic intervals covering all the supplied peaks (a consensus peakset for the experiment). A region is considered for the consensus set if it appears in more than two of the samples. This consensus set represents the overall set of candidate binding sites to be used in further analysis.
+```{r}
+
+samples <- read.csv("samplesheet.csv") %>%
+  dplyr::select(-Condition) # Remove condition column since we don't need it
+
+
+# Load the samplesheet to the dba
+dbaObj <- dba(sampleSheet = samples)
+```
+
+## Affinity binding matrix
+The next step is to take the alignment files and compute count information for each of the peaks/regions in the consensus set. In this step, for each of the consensus regions DiffBind takes the number of aligned reads in the ChIP sample and the input sample, to compute a normalized read count for each sample at every potential binding site. The peaks in the consensus peakset may be re-centered and trimmed based on calculating their summits (point of greatest read overlap) in order to provide more standardized peak intervals.
+```{r}
+#| eval: false
+
+dbaObj$config$singleEnd <- FALSE # We specify that the data is paired-end
+
+dbaObj <- dba.count(
+  dbaObj,
+  bUseSummarizeOverlaps = TRUE,
+  bParallel = TRUE,
+  summits = 50
+)
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+dba.save(dbaObj, file = "dbaObj", dir = "DiffBind/") # save the dba objects one by one so we don't loose the computation time in case a error is encountered
+```
+
+```{r}
+#| echo: false
+
+dbaObj <- dba.load(file = "dbaObj", dir = "DiffBind/")
+```
+
+## Exploratory data analysis
+```{r, data-heatmap}
+dba.plotHeatmap(dbaObj)
+```
+
+```{r, data-pca}
+dba.plotPCA(dbaObj, attributes = DBA_FACTOR, label = DBA_ID)
+```
+
+
+### Normalization
+```{r}
+dbaObj <- dba.normalize(dbaObj, normalize = DBA_NORM_DEFAULT)
+```
+
+
+### Contrasts
+```{r}
+dbaObj <- dba.contrast(
+  dbaObj,
+  design = "~Factor",
+  contrast = c("Factor", "T", "R")
+)
+```
+
+
+### Analyze
+
+```{r}
+#| output: false
+
+dbaObj <- dba.analyze(
+  dbaObj,
+  method = DBA_ALL_METHODS,
+  bParallel = TRUE,
+  bGreylist = FALSE
+)
+
+dba.show(dbaObj, bContrasts = TRUE)
+```
+
+```{r}
+#| echo: false
+dba.show(dbaObj, bContrasts = TRUE)
+```
+
+```{r}
+dba.report(dbaObj, method = DBA_DESEQ2)
+dba.report(dbaObj, method = DBA_EDGER)
+
+```
+
+### Plots
+
+```{r, pca-edger}
+try(
+  {
+    dba.plotPCA(dbaObj, contrast = 1, label = DBA_ID, method = DBA_EDGER)
+  },
+  silent = TRUE
+)
+```
+
+
+```{r, pca-deseq2}
+try(
+  {
+    dba.plotPCA(dbaObj, contrast = 1, label = DBA_ID, method = DBA_DESEQ2)
+  },
+  silent = TRUE
+)
+```
+
+```{r, volcano-plot-edger}
+try(
+  {
+    dba.plotVolcano(dbaObj, contrast = 1, method = DBA_EDGER, factor = "edgeR")
+  },
+  silent = TRUE
+)
+```
+
+
+```{r, volcano-plot-deseq2}
+try(
+  {
+    dba.plotVolcano(
+      dbaObj,
+      contrast = 1,
+      method = DBA_DESEQ2,
+      factor = "DESeq2"
+    )
+  },
+  silent = TRUE
+)
+```
+
+
+```{r, MA-plot-edger}
+try(
+  {
+    dba.plotMA(dbaObj, contrast = 1, method = DBA_EDGER, factor = "edgeR")
+  },
+  silent = TRUE
+)
+```
+
+```{r, MA-plot-deseq2}
+#| warning: false
+try(
+  {
+    dba.plotMA(dbaObj, contrast = 1, method = DBA_DESEQ2, factor = "DESeq2")
+  },
+  silent = TRUE
+)
+```
+
+
+# Merged analysis
+Now we are gonnna perform the same analysis with merged `.bam` files for each condition
+
+```{r, merged-analysis}
+#| eval: false
+merged_samples <- read.csv("MACS3/MergedBAM/samplesheet_merged.csv") %>%
+  dplyr::select(-Condition)
+
+dbaMerged <- dba(sampleSheet = merged_samples)
+dbaMerged$config$singleEnd <- FALSE
+
+dbaMerged <- dba.count(
+  dbaMerged,
+  bUseSummarizeOverlaps = TRUE,
+  bParallel = TRUE,
+  summits = 50
+)
+
+dba.save(dbaMerged, file = "dbaMerged", dir = "DiffBind/")
+
+# dba.plotHeatmap(dbaMerged)
+# dba.plotPCA(dbaMerged, attributes = DBA_FACTOR, label = DBA_ID)
+
+dbaMerged <- dba.normalize(dbaMerged, normalize = DBA_NORM_DEFAULT)
+
+dbaMerged <- dba.contrast(
+  dbaMerged,
+  group1 = dba.mask(dbaMerged, DBA_FACTOR, "T"),
+  group2 = dba.mask(dbaMerged, DBA_FACTOR, "R"),
+  name1 = "T",
+  name2 = "R"
+)
+
+dbaMerged <- dba.analyze(
+  dbaMerged,
+  # method = DBA_DESEQ2,
+  # bParallel = TRUE,
+  bGreylist = FALSE
+)
+
+dba.show(dbaMerged, bContrasts = TRUE)
+
+# Depending on the results some plots may not be computable
+dba.plotPCA(dbaMerged, contrast = 1, label = DBA_ID, method = DBA_EDGER)
+dba.plotPCA(dbaMerged, contrast = 1, label = DBA_ID, method = DBA_DESEQ2)
+dba.plotVolcano(dbaMerged, contrast = 1, method = DBA_EDGER, factor = "edgeR")
+dba.plotVolcano(dbaMerged, contrast = 1, method = DBA_DESEQ2, factor = "DESeq2")
+dba.plotMA(dbaMerged, contrast = 1, method = DBA_EDGER, factor = "edgeR")
+dba.plotMA(dbaMerged, contrast = 1, method = DBA_DESEQ2, factor = "DESeq2")
+```
+
+```{r}
+#| include: false
+merged_samples <- read.csv("MACS3/MergedBAM/samplesheet_merged.csv") %>%
+  dplyr::select(-Condition)
+dbaMerged <- dba.load(file = "dbaMerged", dir = "DiffBind/")
+
+dbaMerged <- dba.normalize(dbaMerged, normalize = DBA_NORM_DEFAULT)
+
+dbaMerged <- dba.contrast(
+  dbaMerged,
+  group1 = dba.mask(dbaMerged, DBA_FACTOR, "T"),
+  group2 = dba.mask(dbaMerged, DBA_FACTOR, "R"),
+  name1 = "T",
+  name2 = "R"
+)
+dbaMerged <- dba.analyze(
+  dbaMerged,
+  method = DBA_ALL_METHODS,
+  bParallel = TRUE,
+  bGreylist = FALSE
+)
+```
+
+```{r, merged-pca}
+#| echo: false
+dba.plotPCA(dbaMerged, attributes = DBA_FACTOR, label = DBA_ID)
+```
+
+```{r, merged-heatmap}
+#| echo: false
+dba.plotHeatmap(dbaMerged)
+```
+
+```{r}
+#| echo: false
+#|
+try(
+  {
+    dba.show(dbaMerged, bContrasts = TRUE)
+    dba.report(dbaObj, method = DBA_DESEQ2)
+    dba.report(dbaObj, method = DBA_EDGER)
+  },
+  silent = TRUE
+)
+```
+
+```{r, merged-pca-edger}
+#| echo: false
+try(
+  {
+    dba.plotPCA(dbaMerged, contrast = 1, label = DBA_ID, method = DBA_EDGER)
+  },
+  silent = TRUE
+)
+```
+
+```{r, merged-pca-deseq2}
+#| echo: false
+try(
+  {
+    dba.plotPCA(dbaMerged, contrast = 1, label = DBA_ID, method = DBA_DESEQ2)
+  },
+  silent = TRUE
+)
+```
+
+```{r, merged-volcano-plot-edger}
+#| echo: false
+try(
+  {
+    dba.plotVolcano(
+      dbaMerged,
+      contrast = 1,
+      method = DBA_EDGER,
+      factor = "edgeR"
+    )
+  },
+  silent = TRUE
+)
+```
+
+```{r, merged-volcano-plot-deseq2}
+#| echo: false
+try(
+  {
+    dba.plotVolcano(
+      dbaMerged,
+      contrast = 1,
+      method = DBA_DESEQ2,
+      factor = "DESeq2"
+    )
+  },
+  silent = TRUE
+)
+```
+
+
+```{r, merged-MA-plot-edger}
+#| echo: false
+try(
+  {
+    dba.plotMA(dbaMerged, contrast = 1, method = DBA_EDGER, factor = "edgeR")
+  },
+  silent = TRUE
+)
+```
+
+```{r, merged-MA-plot-deseq2}
+#| echo: false
+try(
+  {
+    dba.plotMA(dbaMerged, contrast = 1, method = DBA_DESEQ2, factor = "DESeq2")
+  },
+  silent = TRUE
+)
+```
+
+
+###TODO: ADD THE REPORT (DBA.REPORT)
+
+
+# Annotate peaks
+```{r}
+#| output: false
+# Load libraries
+library(ChIPseeker)
+library(TxDb.Rnorvegicus.UCSC.rn6.refGene)
+library(org.Rn.eg.db)
+```
+
+```{r}
+# Example BED file path
+merged_peaks <- "MACS3/MergedPeaks/T_unique_peaks.bed"
+BAM_merged_peaks <- "MACS3/MergedBAM/Peaks/T_unique_peaks.bed"
+
+# Annotate peaks
+merged_peak_anno <- annotatePeak(
+  peak = merged_peaks,
+  TxDb = TxDb.Rnorvegicus.UCSC.rn6.refGene,
+  tssRegion = c(-3000, 3000), # region around TSS considered "promoter"
+  annoDb = "org.Rn.eg.db", # for gene symbols, gene names, etc.
+  sameStrand = FALSE # if TRUE, only annotates genes on same strand
+)
+
+BAM_merged_peak_anno <- annotatePeak(
+  peak = BAM_merged_peaks,
+  TxDb = TxDb.Rnorvegicus.UCSC.rn6.refGene,
+  tssRegion = c(-3000, 3000), # region around TSS considered "promoter"
+  annoDb = "org.Rn.eg.db", # for gene symbols, gene names, etc.
+  sameStrand = FALSE # if TRUE, only annotates genes on same strand
+)
+
+# View the annotatedPeak object
+merged_peak_anno
+BAM_merged_peak_anno
+
+
+annotated_merged_peak <- as.data.frame(merged_peak_anno)
+annotated_BAM_merged_peak <- as.data.frame(BAM_merged_peak_anno)
+```
+
+
+```{r}
+#| eval: false
+#| include: false
+write.csv(
+  annotated_merged_peak,
+  file = "MACS3/MergedPeaks/T_unique_peaks_annotated.csv",
+  row.names = FALSE
+)
+write.csv(
+  annotated_BAM_merged_peak,
+  file = "MACS3/MergedBAM/Peaks/T_unique_peaks_annotated.csv",
+  row.names = FALSE
+)
+```
