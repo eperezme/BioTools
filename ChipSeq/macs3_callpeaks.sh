@@ -31,6 +31,29 @@ while getopts "s:o:g:q:bp:G:f:" opt; do
     esac
 done
 
+# TODO: Add multiple genome sizes for different genomes
+# Check if genome is provided
+if [[ -z "$genome" ]]; then
+    echo "Error: Genome is required. Use -G <genome> to specify the genome."
+    exit 1
+fi
+
+# Set genome sizes for specific genomes
+declare -A genome_sizes
+genome_sizes=( ["hg38"]=2.9e9 ["hg19"]=2.9e9 ["mm10"]=2.6e9 ["mm9"]=2.6e9 ["ce"]=1e8 ["dm"]=1.4e8 ["rn6"]=2e9 )
+
+# Override predefined genome size if gsize is explicitly provided
+if [[ -n "$gsize" ]]; then
+    genome_sizes[$genome]="$gsize"
+    echo "Using provided genome size $gsize for genome $genome"
+elif [[ -n "${genome_sizes[$genome]}" ]]; then
+    gsize="${genome_sizes[$genome]}"
+    echo "Using predefined genome size $gsize for genome $genome"
+else
+    echo "Warning: Genome size for $genome not predefined. Using default genome size $gsize"
+fi
+
+
 # Check if samplesheet is provided and exists
 if [[ -z "$samplesheet" ]]; then
     echo "Error: Sample sheet is required."
@@ -48,38 +71,39 @@ echo "Activating conda environment for macs3..."
 source /zpool_1TB/lib/miniconda3/etc/profile.d/conda.sh
 conda activate macs3
 
+# TODO: Make Refgenie work
 # Search for genome
-echo " - Searching for genome"
-echo " - Detecting map aligner for the first BAM file in the samplesheet"
-first_bam=$(awk -F',' 'NR==2 {print $4}' "$samplesheet") # Get the first BAM file from the samplesheet
-map_aligner=$(samtools view -H "$first_bam" | grep -m 1 '@PG' | awk '{print $2}' | cut -d':' -f2)
-echo " - Map aligner detected: $map_aligner"
-if [[ "$map_aligner" == "bwa" ]]; then
-    map_aligner="BWAIndex"
-elif [[ "$map_aligner" == "bowtie2" ]]; then
-    map_aligner="Bowtie2Index"
-elif [[ "$map_aligner" == "hisat2" ]]; then
-    map_aligner="hisat2_index"
-elif [[ "$map_aligner" == "star" ]]; then
-    map_aligner="star_index"
-elif [[ "$map_aligner" == "bismark" ]]; then
-    map_aligner="bismark_bt2_index"
-else
-    echo " - Unknown map aligner: $map_aligner"
-    exit 1
-fi
-echo " - Checking index file for reference genome"
-ref=$(refgenie seek ${genome}/${map_aligner}) # genome
-echo $ref # debug
-# Check if the reference genome is already downloaded
-if [[ -z "$ref" ]]; then
-    echo " - Genome not found locally, downloading..."
-    refgenie pull $genome/${map_aligner}
-    ref=$(refgenie seek $genome/${map_aligner})
-    echo " - Genome downloaded: $ref"
-else
-    echo " - Found genome: $ref"
-fi
+# echo " - Searching for genome"
+# echo " - Detecting map aligner for the first BAM file in the samplesheet"
+# first_bam=$(awk -F',' 'NR==2 {print $4}' "$samplesheet") # Get the first BAM file from the samplesheet
+# map_aligner=$(samtools view -H "$first_bam" | grep -m 1 '@PG' | awk '{print $2}' | cut -d':' -f2)
+# echo " - Map aligner detected: $map_aligner"
+# if [[ "$map_aligner" == "bwa" ]]; then
+#     map_aligner="BWAIndex"
+# elif [[ "$map_aligner" == "bowtie2" ]]; then
+#     map_aligner="Bowtie2Index"
+# elif [[ "$map_aligner" == "hisat2" ]]; then
+#     map_aligner="hisat2_index"
+# elif [[ "$map_aligner" == "star" ]]; then
+#     map_aligner="star_index"
+# elif [[ "$map_aligner" == "bismark" ]]; then
+#     map_aligner="bismark_bt2_index"
+# else
+#     echo " - Unknown map aligner: $map_aligner"
+#     exit 1
+# fi
+# echo " - Checking index file for reference genome"
+# ref=$(refgenie seek ${genome}/${map_aligner}) # genome
+# echo $ref # debug
+# # Check if the reference genome is already downloaded
+# if [[ -z "$ref" ]]; then
+#     echo " - Genome not found locally, downloading..."
+#     refgenie pull $genome/${map_aligner}
+#     ref=$(refgenie seek $genome/${map_aligner})
+#     echo " - Genome downloaded: $ref"
+# else
+#     echo " - Found genome: $ref"
+# fi
 
 # Set up output directories
 echo "Creating output directories..."
@@ -92,7 +116,7 @@ declare -A factor_bams
 declare -A factor_controls
 declare -A factor_peaks
 declare -A sample_controls
-declare -A sample_is_paired
+# declare -A sample_is_paired
 declare -A sample_format
 factors=()
 sample_count=0
@@ -109,7 +133,7 @@ while IFS="," read -r SampleID Factor Replicate bamReads ControlID bamControl Pe
 
     # Detect format by checking if the BAM file contains paired-end reads
     if [[ "$bamReads" == *.bam ]]; then
-        if samtools view -c -f 1 "$bamReads" > /dev/null 2>&1 && [ $(samtools view -f 1 "$bamReads" | wc -l) -gt 0 ]; then
+        if samtools view -c -f 1 "$bamReads" > /dev/null 2>&1 && [ "$(samtools view -f 1 "$bamReads" | wc -l)" -gt 0 ]; then
             sample_format[$bamReads]="BAMPE"
         else
             sample_format[$bamReads]="BAM"
@@ -163,9 +187,10 @@ for factor in "${factors[@]}"; do
 
     peaks_master="$MERGED_PEAKS_DIR/${factor}_peaks_master.bed"
     merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
+    
 
     # Check if merged peaks and BAM files already exist
-    if [[-f "$merged_bam" ]]; then
+    if [[ -f "$merged_bam" ]]; then
         echo " - Skipping $factor: Merged BAM file already exist."
         continue
     fi
@@ -209,7 +234,7 @@ for factor in "${factors[@]}"; do
         continue
     fi
     # Detect paired-end or single-end format
-    if samtools view -c -f 1 "$merged_bam" > /dev/null 2>&1 && [ $(samtools view -f 1 "$merged_bam" | wc -l) -gt 0 ]; then
+    if samtools view -c -f 1 "$merged_bam" > /dev/null 2>&1 && [ "$(samtools view -f 1 "$merged_bam" | wc -l)" -gt 0 ]; then
         format="BAMPE"
     else
         format="BAM"
@@ -220,55 +245,62 @@ for factor in "${factors[@]}"; do
     echo " - Peak calling completed for factor: $factor"
 done
 
-for factor in "${factors[@]}"; do
-    merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
-    # Convert merged BAM to CRAM for storage efficiency
-    echo " - Converting merged BAM to CRAM for factor $factor"
-    merged_cram="$MERGED_BAM_DIR/${factor}_merged.cram"
-    samtools view -C -T $ref -o "$merged_cram" "$merged_bam"
-    # echo " - Deleting merged BAM file for factor $factor"
-    # rm "$merged_bam"
-    # rm "${merged_bam}.bai"
-done
+# TODO: Fix the CRAM reference issue
+# for factor in "${factors[@]}"; do
+#     merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
+#     # Convert merged BAM to CRAM for storage efficiency
+#     echo " - Converting merged BAM to CRAM for factor $factor"
+#     merged_cram="$MERGED_BAM_DIR/${factor}_merged.cram"
+#     samtools view -C -T $ref -o "$merged_cram" "$merged_bam"
+#     # echo " - Deleting merged BAM file for factor $factor"
+#     # rm "$merged_bam"
+#     # rm "${merged_bam}.bai"
+# done
 
-# Intersect peaks between all factor combinations
+# Subtract peaks between all factor combinations
 for (( i=0; i<${#factors[@]}; i++ )); do
         for (( j=i+1; j<${#factors[@]}; j++ )); do
                 A="${factors[i]}"
                 B="${factors[j]}"
-                echo "Intersecting peaks: $A vs $B"
-# TODO change name of intersect output files to know wich ones are the interesting ones
-                bedtools intersect -a "$MERGED_PEAKS_DIR/${A}_peaks_master.bed" \
+                echo "Subtracting peaks: $A vs $B"
+        
+        mkdir -p "$MERGED_PEAKS_DIR/${A}_vs_${B}"
+        mkdir -p "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}"
+
+
+
+# [x] change name of subtraction output files to know wich ones are the interesting ones (A minus B)
+                bedtools subtract -A -a "$MERGED_PEAKS_DIR/${A}_peaks_master.bed" \
                                                      -b "$MERGED_PEAKS_DIR/${B}_peaks_master.bed" \
-                                                     -wa > "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed"
-                sort -k1,1 -k2,2n "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed" > "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed"
+                                                     > "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed"
+                sort -k1,1 -k2,2n "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed" > "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed"
 
-                bedtools intersect -a "$MERGED_BAM_DIR/Peaks/${A}_peaks.narrowPeak" \
+                bedtools subtract -A -a "$MERGED_BAM_DIR/Peaks/${A}_peaks.narrowPeak" \
                                                      -b "$MERGED_BAM_DIR/Peaks/${B}_peaks.narrowPeak" \
-                                                     -wa > "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_intersected_peaks.bed"
-                sort -k1,1 -k2,2n "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_intersected_peaks.bed" > "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_unique_peaks.bed"
+                                                     > "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed"
+                sort -k1,1 -k2,2n "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed" > "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed"
 
-                echo "Annotating intersected peaks for $A vs $B"
+                echo "Annotating unique ${A} peaks for $A vs $B"
                 # Check if bed files are empty before annotating
-                if [[ ! -s "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed" && ! -s "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_unique_peaks.bed" ]]; then
+                if [[ ! -s "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed" && ! -s "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed" ]]; then
                     echo "Both BED files are empty for $A vs $B. Skipping annotation."
                     continue
                 fi
 
-                if [[ -s "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed" ]]; then
-                    echo "Annotating non-empty intersected peaks for $A vs $B (MERGED_PEAKS_DIR)"
-                    ./annotatepeaks.R -i "$MERGED_PEAKS_DIR/${A}_vs_${B}_unique_peaks.bed" -g ${genome} -f $output_format
+                if [[ -s "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed" ]]; then
+                    echo "Annotating non-empty unique ${A} peaks for $A vs $B (MERGED_PEAKS_DIR)"
+                    ./annotatepeaks.R -i "$MERGED_PEAKS_DIR/${A}_vs_${B}/${A}_unique_peaks.bed" -g ${genome} -f $output_format
                 fi
 
-                if [[ -s "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_unique_peaks.bed" ]]; then
-                    echo "Annotating non-empty intersected peaks for $A vs $B (MERGED_BAM_DIR)"
-                    ./annotatepeaks.R -i "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}_unique_peaks.bed" -g ${genome} -f $output_format
+                if [[ -s "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed" ]]; then
+                    echo "Annotating non-empty unique ${A} peaks for $A vs $B (MERGED_BAM_DIR)"
+                    ./annotatepeaks.R -i "$MERGED_BAM_DIR/Peaks/${A}_vs_${B}/${A}_unique_peaks.bed" -g ${genome} -f $output_format
                 fi
 
         done
 done
 
-# TODO: Create the samplesheet_merged.csv file
+# [x]: Create the samplesheet_merged.csv file
 # Create the samplesheet_merged.csv file
 echo "Creating samplesheet_merged.csv..."
 merged_samplesheet="$MERGED_BAM_DIR/samplesheet_merged.csv"
@@ -306,4 +338,5 @@ echo "Cleaning up intermediate files..."
 rm "$MERGED_PEAKS_DIR"/*.tmp
 rm "$MERGED_PEAKS_DIR"/*_sorted.bed
 rm "$MERGED_PEAKS_DIR"/*_merged.bed
-rm "$MERGED_BAM_DIR/Peaks/"*_intersected_peaks.bed
+rm "$MERGED_PEAKS_DIR"/*/*_unique_peaks.bed
+rm "$MERGED_BAM_DIR"/Peaks/*/*_unique_peaks.bed
