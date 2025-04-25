@@ -12,12 +12,13 @@ gsize=2e9
 qval=0.05
 broad_flag=""
 parallel_cores=4
+overwrite=false  # New flag for overwriting files
 
 # Additional default parameters
 output_format="csv"
 
 # Parse command-line arguments
-while getopts "s:o:g:q:bp:G:f:" opt; do
+while getopts "s:o:g:q:bp:G:f:w" opt; do
     case ${opt} in
         s ) samplesheet="$OPTARG" ;;
         o ) OUTDIR="$OPTARG" ;;
@@ -27,11 +28,12 @@ while getopts "s:o:g:q:bp:G:f:" opt; do
         p ) parallel_cores="$OPTARG" ;;
         G ) genome="$OPTARG" ;;
         f ) output_format="$OPTARG" ;;
-        * ) echo "Usage: $0 -s <samplesheet.csv> [-o outdir] [-g genome_size] [-q qval] [-b] [-p cores] [-G genome] [-f csv|tsv]"; exit 1 ;;
+        w ) overwrite=true ;;  # Enable overwriting
+        * ) echo "Usage: $0 -s <samplesheet.csv> [-o outdir] [-g genome_size] [-q qval] [-b] [-p cores] [-G genome] [-f csv|tsv] [-w]"; exit 1 ;;
     esac
 done
 
-# TODO: Add multiple genome sizes for different genomes
+# [x]: Add multiple genome sizes for different genomes
 # Check if genome is provided
 if [[ -z "$genome" ]]; then
     echo "Error: Genome is required. Use -G <genome> to specify the genome."
@@ -121,6 +123,7 @@ declare -A sample_format
 factors=()
 sample_count=0
 
+# [x]: Seems Last sample is not taken into account
 # Parse the samplesheet line by line
 echo "Parsing samplesheet..."
 while IFS="," read -r SampleID Factor Replicate bamReads ControlID bamControl Peaks PeakCaller Tissue Condition PairedEnd; do
@@ -147,7 +150,7 @@ while IFS="," read -r SampleID Factor Replicate bamReads ControlID bamControl Pe
     fi
 
     [[ " ${factors[*]} " =~ " $Factor " ]] || factors+=("$Factor")
-done < "$samplesheet"
+done < <(cat "$samplesheet")  # Use a subshell with `cat` to ensure the last line is read
 
 echo "Found $sample_count samples across ${#factors[@]} factors: ${factors[*]}"
 
@@ -162,7 +165,7 @@ for factor in "${factors[@]}"; do
         format="${sample_format[$bam]}"
         echo "Processing sample: $name (format: $format)"
 
-        if [[ ! -f "$OUTDIR/${name}_peaks.narrowPeak" ]]; then
+        if [[ "$overwrite" == true || ! -f "$OUTDIR/${name}_peaks.narrowPeak" ]]; then
             if [ -n "$control" ]; then
                 echo "Using control: $control"
                 macs3_cmds+=("macs3 callpeak -t $bam -c $control -n $name -f $format --outdir $OUTDIR -g $gsize -q $qval $broad_flag")
@@ -189,12 +192,6 @@ for factor in "${factors[@]}"; do
     merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
     
 
-    # Check if merged peaks and BAM files already exist
-    if [[ -f "$merged_bam" ]]; then
-        echo " - Skipping $factor: Merged BAM file already exist."
-        continue
-    fi
-
     echo "Merging peaks for factor: $factor"
     peaks_concat="$MERGED_PEAKS_DIR/${factor}_peaks_concat.tmp"
     peaks_sorted="$MERGED_PEAKS_DIR/${factor}_peaks_sorted.bed"
@@ -206,11 +203,12 @@ for factor in "${factors[@]}"; do
                    -o first,sum,distinct,mean,mean,mean,mean > "$peaks_merged"
     sort -k1,1 -k2,2n "$peaks_merged" > "$peaks_master"
 
-    echo "Merging BAM files for factor: $factor"
-    samtools merge -f -o "$merged_bam" ${factor_bams[$factor]}
-    samtools sort -o "$merged_bam" "$merged_bam"
-    samtools index "$merged_bam"
-
+        echo "Merging BAM files for factor: $factor"
+        samtools merge -f -o "$merged_bam" ${factor_bams[$factor]}
+        samtools sort -o "$merged_bam" "$merged_bam"
+        samtools index "$merged_bam"
+        echo " - Skipping $factor: Merged BAM file already exists."
+        
     # Merge control BAMs for factor if any
     if [[ -n "${factor_controls[$factor]// }" ]]; then
         echo "Merging control BAM files for factor: $factor"
@@ -228,11 +226,6 @@ for factor in "${factors[@]}"; do
     merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
     merged_control="$MERGED_BAM_DIR/${factor}_control_merged.bam"
 
-    # Check if peak file already exists
-    if [[ -f "$MERGED_BAM_DIR/Peaks/${factor}_peaks.narrowPeak" ]]; then
-        echo " - Skipping $factor: Peak file already exists."
-        continue
-    fi
     # Detect paired-end or single-end format
     if samtools view -c -f 1 "$merged_bam" > /dev/null 2>&1 && [ "$(samtools view -f 1 "$merged_bam" | wc -l)" -gt 0 ]; then
         format="BAMPE"
@@ -302,36 +295,35 @@ done
 
 # [x]: Create the samplesheet_merged.csv file
 # Create the samplesheet_merged.csv file
-echo "Creating samplesheet_merged.csv..."
 merged_samplesheet="$MERGED_BAM_DIR/samplesheet_merged.csv"
 
 # Extract the header from the original samplesheet
 header=$(head -n 1 "$samplesheet")
-echo "$header" > "$merged_samplesheet"
+if [[ "$overwrite" == true || ! -f "$merged_samplesheet" ]]; then
+    echo "Creating samplesheet_merged.csv..."
+    echo "$header" > "$merged_samplesheet"
+    for factor in "${factors[@]}"; do
+        merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
+        peaks_master="$MERGED_BAM_DIR/Peaks/${factor}_peaks.bed"
+        merged_control="$MERGED_BAM_DIR/${factor}_control_merged.bam"
 
-# Add merged BAM and peak information for each factor
-for factor in "${factors[@]}"; do
-    merged_bam="$MERGED_BAM_DIR/${factor}_merged.bam"
-    peaks_master="$MERGED_PEAKS_DIR/${factor}_peaks_master.bed"
-## Check if merged_control exists
-    merged_control="$MERGED_BAM_DIR/${factor}_control_merged.bam"
+        if [[ ! -f "$merged_control" ]]; then
+            merged_control="NA"
+            control_id="NA"
+        else
+            control_id=${factor}_control
+        fi
 
-   if [[ ! -f "$merged_control" ]]; then
-        merged_control="NA"
-        control_id="NA"
-    else
-        control_id=${factor}_control
-    fi
-    if [[ -f "$merged_bam" && -f "$peaks_master" ]]; then
-        echo "$factor,$factor,1,$merged_bam,$control_id,$merged_control,$peaks_master,narrowPeak,NA,NA" >> "$merged_samplesheet"
-    else
-        echo "Warning: Missing merged BAM or peaks file for factor $factor. Skipping entry."
-    fi
-done
-
-echo "samplesheet_merged.csv created at $merged_samplesheet"
-
-
+        if [[ -f "$merged_bam" && -f "$peaks_master" ]]; then
+            echo "$factor,$factor,1,$merged_bam,$control_id,$merged_control,$peaks_master,narrowPeak,NA,NA" >> "$merged_samplesheet"
+        else
+            echo "Warning: Missing merged BAM or peaks file for factor $factor. Skipping entry."
+        fi
+    done
+    echo "samplesheet_merged.csv created at $merged_samplesheet"
+else
+    echo "Skipping creation of samplesheet_merged.csv - file already exists."
+fi
 
 # Cleanup
 echo "Cleaning up intermediate files..."
